@@ -1,0 +1,125 @@
+import java.net.*;
+import ij.*;
+import java.io.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.awt.Robot;
+
+int PORT = 3350;
+
+
+// The robot performing the clicking
+// ---------------------------------
+Robot robot = new Robot();
+void click(int x, int y) {
+	p = MouseInfo.getPointerInfo().getLocation();
+	robot.mouseMove(x, y);
+	Thread.sleep(200);
+	robot.mousePress(InputEvent.BUTTON1_MASK);
+	Thread.sleep(200);
+	robot.mouseRelease(InputEvent.BUTTON1_MASK);
+	Thread.sleep(200);
+	robot.mouseMove(p.x, p.y);
+	Thread.sleep(200);
+}
+
+
+// The system tray
+// ---------------
+if (!SystemTray.isSupported()) {
+    System.out.println("SystemTray is not supported");
+    return;
+}
+
+// URL imageURL = new URL("http://www.oice.fau.de/grafiken/logo_cross_screen_rgb.png");
+URL imageURL = new URL("https://img.icons8.com/fluency-systems-regular/344/voice-and-touch.png");         
+Image icon = new ImageIcon(imageURL, "tray icon").getImage();
+
+final PopupMenu popup = new PopupMenu();
+MenuItem exitItem = new MenuItem("Exit");
+exitItem.addActionListener(new ActionListener() {
+	public void actionPerformed(ActionEvent e) {
+		shutdown.set(true);
+		for(TrayIcon icon : tray.getTrayIcons()) {
+			tray.remove(icon);
+		}
+	}
+});
+popup.add(exitItem);
+
+final TrayIcon trayIcon = new TrayIcon(icon);
+trayIcon.setImageAutoSize(true);
+trayIcon.setPopupMenu(popup);
+
+final SystemTray tray = SystemTray.getSystemTray();
+try {
+    tray.add(trayIcon);
+} catch (AWTException e) {
+    System.out.println("TrayIcon could not be added.");
+}
+
+
+
+
+// the actual server
+// -----------------
+ServerSocket server = null;
+try {
+	server = new ServerSocket(PORT);
+	server.setSoTimeout(10000);
+} catch(Exception e) {
+	IJ.handleException(e);
+	return;
+}
+
+
+AtomicBoolean shutdown = new AtomicBoolean(false);
+
+while(!shutdown.get()) {
+	Socket socket = null;
+	BufferedReader in = null;
+	long time = System.currentTimeMillis();
+	try {
+		socket = server.accept();
+		System.out.println("Accepted connection from " + socket.getInetAddress());
+		in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+		String line = in.readLine();
+		
+		print(line);
+
+		if(line.startsWith("shutdown")) {
+			in.close();
+			socket.close();
+			break;
+		}
+		
+		else if(line.startsWith("click")) {
+			String[] toks = line.split(" ");
+			int x = Integer.parseInt(toks[1]);
+			int y = Integer.parseInt(toks[2]);
+			print("click (" + x + ", " + y + ")");
+			click(x, y);
+		}
+		
+		in.close();
+		socket.close();
+	} catch(SocketTimeoutException e) {
+		print("timeout");
+	} catch(Exception e) {
+		IJ.handleException(e);
+		if(server != null) {
+			try {
+				server.close();
+				server = null;
+			} catch (IOException e1) { }
+		}
+	}
+}
+
+if(server != null) {
+	try {
+		server.close();
+	} catch (IOException e) {
+	}
+}
+
+print("Server shut down");

@@ -1,0 +1,178 @@
+import ij.IJ;
+import ij.Prefs;
+import ij.gui.WaitForUserDialog;
+import ij.ImagePlus;
+import ij.CompositeImage;
+import ij.plugin.RGBStackMerge;
+import ij.process.ShortProcessor;
+import ij.process.ImageProcessor;
+import ij.ImageStack;
+import ij.process.LUT;
+import ij.gui.GenericDialog;
+
+import java.awt.Color;
+
+// SimpleClickClient
+// -----------------
+HOST = "10.210.17.9";
+PORT = 3350;
+
+void send(String s) {
+	Socket socket;
+	try {
+		socket = new Socket(HOST, PORT);
+	} catch (UnknownHostException e) {
+		throw new RuntimeException("Cannot connect to SimpleClickServer", e);
+	} catch (IOException e) {
+		throw new RuntimeException("Cannot connect to SimpleClickServer", e);
+	}
+	
+	try {
+		PrintStream out = new PrintStream(socket.getOutputStream());
+		out.println(s);
+	} catch(Exception e) {
+		throw new RuntimeException("Cannot connect to SimpleClickServer", e);
+	} finally {
+		try {
+			socket.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+}
+
+/**
+ * Send a click command that's supposed to click the 'Live' button; adjust
+ * the coordinates to the actual screen coordinates of the live button.
+ */
+void toggleLive() {
+	send("click 120 1370");
+}
+
+/**
+ * Sends a click command that's supposed to click on the nth channel; adjust
+ * the coordinates to the actual screen coordinates needed to select each respective
+ * channel.
+ * The channel index is 1-based.
+ */
+void selectChannel(int channel) {
+	int x = 430 + (channel - 1) * 120;
+	send("click "  + x + " 165");
+}
+
+
+/**
+ * Acquire an image and return it as a ShortProcessor
+ */
+ImageProcessor snap() {
+	toggleLive();
+	Thread.sleep(2000);
+	mmc.snapImage();
+	toggleLive();
+	img = mmc.getImage();
+	gui.displayImage(img);
+	width = (int)mmc.getImageWidth();
+	height = (int)mmc.getImageHeight();
+	byteDepth = mmc.getBytesPerPixel();
+	return new ShortProcessor(width, height, img, null);
+}
+
+/**
+ * Enlarge an image 4 times; used for non-SRRF images to adjust them
+ * to the size of SRRF images.
+ */
+ImageProcessor resize(ImageProcessor ip) {
+	return ip.resize(4 * ip.getWidth());
+}
+
+
+
+// Show GUI
+// --------
+nChannels = 7;
+String[] names   = new String[nChannels];
+boolean[] wSRRF  = new boolean[nChannels];
+boolean[] woSRRF = new boolean[nChannels];
+
+acquisitionName = Prefs.get("SRRF.acquisitionName", "");
+for(int ch = 0; ch < nChannels; ch++) {
+	names[ch]  = Prefs.get("SRRF.channelName_" + ch, "Channel " + (ch + 1));
+	wSRRF[ch]  = Prefs.get("SRRF.wSRRF_" + ch, false);
+	woSRRF[ch] = Prefs.get("SRRF.woSRRF_" + ch, false);
+}
+
+gd = new GenericDialog("SRRF 'n' TIRF");
+gd.addStringField("Acquisition name", acquisitionName);
+
+for(int ch = 0; ch < nChannels; ch++) {
+	gd.addStringField("Ch " + (ch + 1), names[ch]);
+	gd.addToSameRow();
+	gd.addCheckbox("no SRRF", woSRRF[ch]);
+	gd.addToSameRow();
+	gd.addCheckbox("SRRF", wSRRF[ch]);
+}
+
+
+gd.showDialog();
+if(gd.wasCanceled())
+	return;
+
+acquisitionName = gd.getNextString();
+Prefs.set("SRRF.acquisitionName", acquisitionName);
+
+for(int ch = 0; ch < nChannels; ch++) {
+	names [ch] = gd.getNextString();
+	woSRRF[ch] = gd.getNextBoolean();
+	wSRRF [ch] = gd.getNextBoolean();
+
+	Prefs.set("SRRF.channelName_" + ch, names[ch]);
+	Prefs.set("SRRF.wSRRF_"       + ch, wSRRF[ch]);
+	Prefs.set("SRRF.woSRRF_"      + ch, woSRRF[ch]);
+}
+Prefs.savePreferences();
+
+
+
+// Acquisition
+// -----------
+camera = mmc.getCameraDevice();
+initial = mmc.getProperty(camera, "SRRF | Enable");
+stack = null;
+
+for(int ch = 0; ch < nChannels; ch++) {
+	selectChannel(ch + 1);
+	Thread.sleep(2000);
+	if(woSRRF[ch]) {
+		IJ.log("Acquiring " + names[ch] + " without SRRF");
+		mmc.setProperty(camera, "SRRF | Enable", "Disabled");
+		ip = resize(snap());
+		if(stack == null) stack = new ImageStack(ip.getWidth(), ip.getHeight());
+		stack.addSlice(names[ch] + "-no-srrf", ip);
+	}
+	if(wSRRF[ch]) {
+		IJ.log("Acquiring " + names[ch] + " with SRRF");
+		mmc.setProperty(camera, "SRRF | Enable", "Enabled");
+		ip = snap();
+		if(stack == null) stack = new ImageStack(ip.getWidth(), ip.getHeight());
+		stack.addSlice(names[ch] + "-srrf", ip);
+	}
+}
+mmc.setProperty(camera, "SRRF | Enable", initial);
+
+
+imp = new ImagePlus(acquisitionName, stack);
+imp.setDimensions(stack.getSize(), 1, 1);
+imp = new CompositeImage(imp);
+
+for(int ch = 0; ch < stack.getSize(); ch++)
+	imp.setChannelLut(LUT.createLutFromColor(Color.WHITE), ch + 1);
+
+
+imp.getCalibration().pixelWidth  = 13.0 / 100 / 4;
+imp.getCalibration().pixelHeight = 13.0 / 100 / 4;
+imp.getCalibration().setUnit("um");
+
+imp.show();
+
+IJ.log("done");
+
